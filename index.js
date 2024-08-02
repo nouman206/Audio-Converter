@@ -11,9 +11,9 @@ app.use(express.urlencoded({ extended: false }));
 app.post("/", async (req, res) => {
     try {
         let { audio, name } = req.body;
-        const inputFilePath = path.join(__dirname, `${name}input.mp3`);
-        const outputFilePath = path.join(__dirname, `${name}output.mp3`);
-        
+        const inputFilePath = path.resolve(__dirname, `${name}input.mp3`);
+        const outputFilePath = path.resolve(__dirname, `${name}output.mp3`);
+
         // Save the input file to the file system
         fs.writeFileSync(inputFilePath, Buffer.from(audio, 'base64'));
 
@@ -43,11 +43,11 @@ function convertToWav(inputFilePath, outputFilePath) {
             .on('end', resolve)
             .on('error', (err, stdout, stderr) => {
                 console.error('FFmpeg error:', err);
-                console.error('FFmpeg stdout:', stdout);
-                console.error('FFmpeg stderr:', stderr);
+                console.error('FFmpeg stdout:', stdout || 'No stdout');
+                console.error('FFmpeg stderr:', stderr || 'No stderr');
                 reject(err);
             })
-            .save(outputFilePath);
+            .run();
     });
 }
 
