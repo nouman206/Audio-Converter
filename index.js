@@ -39,7 +39,7 @@ function convertToWav(inputFilePath, outputFilePath) {
     return new Promise((resolve, reject) => {
         ffmpeg(inputFilePath)
             .setFfmpegPath(ffmpegPath)
-            .toFormat('mp3')  // Change this if you need a different format
+            .toFormat('mp3')  // Use 'wav' if you want WAV format
             .on('end', resolve)
             .on('error', (err, stdout, stderr) => {
                 console.error('FFmpeg error:', err);
@@ -47,7 +47,7 @@ function convertToWav(inputFilePath, outputFilePath) {
                 console.error('FFmpeg stderr:', stderr || 'No stderr');
                 reject(err);
             })
-            .run();
+            .save(outputFilePath);
     });
 }
 
