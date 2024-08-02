@@ -1,5 +1,4 @@
 const ffmpeg = require('fluent-ffmpeg');
-const ffmpegPath = require('ffmpeg-static');
 const fs = require('fs');
 const path = require('path');
 const express = require('express');
@@ -38,8 +37,10 @@ app.post("/", async (req, res) => {
 function convertToWav(inputFilePath, outputFilePath) {
     return new Promise((resolve, reject) => {
         ffmpeg(inputFilePath)
-            .setFfmpegPath(ffmpegPath)
-            .toFormat('mp3')  // Use 'wav' if you want WAV format
+            .toFormat('mp3')  // Change to 'wav' if you need WAV format
+            .on('start', commandLine => {
+                console.log('FFmpeg command:', commandLine);
+            })
             .on('end', resolve)
             .on('error', (err, stdout, stderr) => {
                 console.error('FFmpeg error:', err);
