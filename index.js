@@ -9,14 +9,27 @@ app.use(express.urlencoded({limit: '50mb', extended: false }));
 
 app.post("/", async (req, res) => {
     try {
-        let { audio, name } = req.body;
+        let { audio_data, audio_chunck, name } = req.body;
+        
+        Promise.all([convertToWav(audio_data, name+"_da"), convertToWav(audio_chunck, name+"_ch")]).then((values) => {
+            return res.status(200).json({ audio_data: values[0], audio_chunck: values[1]});
+        });
+    } catch (error) {
+        console.error('Error converting audio:', error);
+        return res.status(500).json({ message: 'Failed to convert audio', error: error.message });
+    }
+});
+
+
+function convertToWav(audio, name) {
+    return new Promise(async (resolve, reject) => {
         const inputFilePath = path.resolve(__dirname, `${name}input.mp3`);
         const outputFilePath = path.resolve(__dirname, `${name}output.mp3`);
 
         // Save the input file to the file system
         fs.writeFileSync(inputFilePath, Buffer.from(audio, 'base64'));
 
-        await convertToWav(inputFilePath, outputFilePath);
+        await convert(inputFilePath, outputFilePath);
         console.log("File Converted Successfully");
 
         // Read the converted file
@@ -27,14 +40,12 @@ app.post("/", async (req, res) => {
         await fs.promises.unlink(inputFilePath);
         await fs.promises.unlink(outputFilePath);
 
-        return res.status(200).json({ audio: outputBase64 });
-    } catch (error) {
-        console.error('Error converting audio:', error);
-        return res.status(500).json({ message: 'Failed to convert audio', error: error.message });
-    }
-});
+        resolve(outputBase64)
+    });
+}
 
-function convertToWav(inputFilePath, outputFilePath) {
+
+function convert(inputFilePath, outputFilePath) {
     return new Promise((resolve, reject) => {
         ffmpeg(inputFilePath)
             .toFormat('mp3')  // Change to 'wav' if you need WAV format
