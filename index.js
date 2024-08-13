@@ -10,9 +10,29 @@ app.use(express.urlencoded({limit: '50mb', extended: false }));
 app.post("/", async (req, res) => {
     try {
         let { audio_data, audio_chunck, name } = req.body;
-        
-        Promise.all([convertToWav(audio_data, name+"_da"), convertToWav(audio_chunck, name+"_ch")]).then((values) => {
-            return res.status(200).json({ audio_data: values[0], audio_chunck: values[1]});
+
+        let pro = [];
+
+        if(audio_data){
+            pro.push(convertToWav(audio_data, name+"_da"))
+        }
+
+        if(audio_chunck){
+            pro.push(convertToWav(audio_chunck, name+"_ch"))
+        }
+
+        Promise.all(pro).then((values) => {
+            let result = {};
+
+            if(values.length > 0 && values[0]){
+                result.audio_data =  values[0]
+            }
+
+            if(values.length > 0 && values[1]){
+                result.audio_chunck =  values[1]
+            }
+
+            return res.status(200).json(result);
         });
     } catch (error) {
         console.error('Error converting audio:', error);
