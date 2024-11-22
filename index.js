@@ -25,11 +25,13 @@ app.post("/", async (req, res) => {
             let result = {};
 
             if(values.length > 0 && values[0]){
-                result.audio_data =  values[0]
+                result.audio_data =  values[0]['base64']
+                result.audio_data_duration =  values[0]['duration']
             }
 
             if(values.length > 0 && values[1]){
-                result.audio_chunck =  values[1]
+                result.audio_chunck =  values[1]['base64']
+                result.audio_chunck_duration =  values[1]['duration']
             }
 
             return res.status(200).json(result);
@@ -49,18 +51,25 @@ function convertToWav(audio, name) {
         // Save the input file to the file system
         fs.writeFileSync(inputFilePath, Buffer.from(audio, 'base64'));
 
-        await convert(inputFilePath, outputFilePath);
-        console.log("File Converted Successfully");
+        try {
+            await convert(inputFilePath, outputFilePath);
+            console.log("File Converted Successfully");
 
-        // Read the converted file
-        const outputFileBuffer = fs.readFileSync(outputFilePath);
-        const outputBase64 = outputFileBuffer.toString('base64');
-        
-        // Clean up files
-        await fs.promises.unlink(inputFilePath);
-        await fs.promises.unlink(outputFilePath);
+            // Get duration
+            const duration = await getAudioDuration(outputFilePath);
 
-        resolve(outputBase64)
+            // Read the converted file
+            const outputFileBuffer = fs.readFileSync(outputFilePath);
+            const outputBase64 = outputFileBuffer.toString('base64');
+
+            // Clean up files
+            await fs.promises.unlink(inputFilePath);
+            await fs.promises.unlink(outputFilePath);
+
+            resolve({ base64: outputBase64, duration });
+        } catch (error) {
+            reject(error);
+        }
     });
 }
 
@@ -80,6 +89,18 @@ function convert(inputFilePath, outputFilePath) {
                 reject(err);
             })
             .save(outputFilePath);
+    });
+}
+
+function getAudioDuration(filePath) {
+    return new Promise((resolve, reject) => {
+        ffmpeg.ffprobe(filePath, (err, metadata) => {
+            if (err) {
+                reject(err);
+            } else {
+                resolve(metadata.format.duration); // Duration in seconds
+            }
+        });
     });
 }
 
