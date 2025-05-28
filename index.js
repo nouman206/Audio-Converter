@@ -55,8 +55,8 @@ app.post("/", async (req, res) => {
 
 function extractLastSeconds(audio, name, seconds) {
     return new Promise((resolve, reject) => {
-        const inputFilePath = path.resolve(__dirname, `${name}input.mp3`);
-        const outputFilePath = path.resolve(__dirname, `${name}trimmed.mp3`);
+        const inputFilePath = path.resolve(__dirname, `${name}input.webm`);
+        const outputFilePath = path.resolve(__dirname, `${name}trimmed.webm`);
 
         fs.writeFileSync(inputFilePath, Buffer.from(audio, 'base64'));
 
@@ -65,7 +65,7 @@ function extractLastSeconds(audio, name, seconds) {
 
             ffmpeg(inputFilePath)
                 .setStartTime(startTime)
-                .toFormat('mp3')
+                .toFormat('webm')
                 .on('end', () => {
                     const trimmedBuffer = fs.readFileSync(outputFilePath);
                     resolve(trimmedBuffer.toString('base64'));
@@ -82,9 +82,9 @@ function extractLastSeconds(audio, name, seconds) {
 
 function concatenateAudios(base64Audio1, base64Audio2, name) {
     return new Promise((resolve, reject) => {
-        const inputFile1 = path.resolve(__dirname, `${name}_1.mp3`);
-        const inputFile2 = path.resolve(__dirname, `${name}_2.mp3`);
-        const outputFilePath = path.resolve(__dirname, `${name}_merged.mp3`);
+        const inputFile1 = path.resolve(__dirname, `${name}_1.webm`);
+        const inputFile2 = path.resolve(__dirname, `${name}_2.webm`);
+        const outputFilePath = path.resolve(__dirname, `${name}_merged.webm`);
 
         fs.writeFileSync(inputFile1, Buffer.from(base64Audio1, 'base64'));
         fs.writeFileSync(inputFile2, Buffer.from(base64Audio2, 'base64'));
@@ -109,8 +109,8 @@ function concatenateAudios(base64Audio1, base64Audio2, name) {
 
 function convertToWav(audio, name) {
     return new Promise(async (resolve, reject) => {
-        const inputFilePath = path.resolve(__dirname, `${name}input.mp3`);
-        const outputFilePath = path.resolve(__dirname, `${name}output.mp3`);
+        const inputFilePath = path.resolve(__dirname, `${name}input.webm`);
+        const outputFilePath = path.resolve(__dirname, `${name}output.webm`);
 
         // Save the input file to the file system
         fs.writeFileSync(inputFilePath, Buffer.from(audio, 'base64'));
@@ -141,7 +141,7 @@ function convertToWav(audio, name) {
 function convert(inputFilePath, outputFilePath) {
     return new Promise((resolve, reject) => {
         ffmpeg(inputFilePath)
-            .toFormat('mp3')  // Change to 'wav' if you need WAV format
+            .toFormat('webm')  // Change to 'wav' if you need WAV format
             .on('start', commandLine => {
                 console.log('FFmpeg command:', commandLine);
             })
