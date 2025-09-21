@@ -119,16 +119,25 @@ function convertToWav(audio, name) {
             await convert(inputFilePath, outputFilePath);
             console.log("File Converted Successfully");
 
+
+            let volumeMultiplier = 2.5; // volume multiplier
+            let incInput = outputFilePath;
+            let incOutput = path.resolve(__dirname, `${name}output_inc.mp3`);
+
+            // Increase volume of the converted file
+            await increaseVolumeWebm(incInput, incOutput, volumeMultiplier);
+
             // Get duration
-            const duration = await getAudioDuration(outputFilePath);
+            const duration = await getAudioDuration(incOutput);
 
             // Read the converted file
-            const outputFileBuffer = fs.readFileSync(outputFilePath);
+            const outputFileBuffer = fs.readFileSync(incOutput);
             const outputBase64 = outputFileBuffer.toString('base64');
 
             // Clean up files
             await fs.promises.unlink(inputFilePath);
             await fs.promises.unlink(outputFilePath);
+            await fs.promises.unlink(incOutput);
 
             resolve({ base64: outputBase64, duration });
         } catch (error) {
@@ -155,6 +164,36 @@ function convert(inputFilePath, outputFilePath) {
             .save(outputFilePath);
     });
 }
+
+function increaseVolumeWebm(inputPath, outputPath, volumeMultiplier = 2.0) {
+  return new Promise((resolve, reject) => {
+    // Clamp volume to safe range (0.1 - 3.0)
+    volumeMultiplier = Math.max(0.1, Math.min(volumeMultiplier, 3.0));
+
+    ffmpeg(inputPath)
+      .outputOptions([
+        '-filter:a', `volume=${volumeMultiplier}`, // adjust audio volume
+        '-c:v', 'copy' // copy video stream without re-encoding
+      ])
+      .on('start', cmd => {
+        console.log('FFmpeg command:', cmd);
+        console.log(`🎧 Increasing volume by ${volumeMultiplier}x`);
+      })
+      .on('stderr', line => {
+        console.log('FFmpeg stderr:', line);
+      })
+      .on('end', () => {
+        console.log('✅ Volume increase completed.');
+        resolve();
+      })
+      .on('error', err => {
+        console.error('❌ FFmpeg error:', err.message);
+        reject(err);
+      })
+      .save(outputPath);
+  });
+}
+
 
 function getAudioDuration(filePath) {
     return new Promise((resolve, reject) => {
