@@ -1,8 +1,13 @@
-const ffmpeg = require('fluent-ffmpeg');
-const fs = require('fs');
-const path = require('path');
-const express = require('express');
+const express = require("express");
+const AWS = require("aws-sdk");
+const ffmpeg = require("fluent-ffmpeg");
+const fs = require("fs");
+const path = require("path");
+const os = require("os");
+const axios = require("axios");
+const FormData = require("form-data");
 const app = express();
+const SONIOX_BASE_URL = "https://api.soniox.com/v1";
 
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({limit: '50mb', extended: false }));
@@ -52,7 +57,6 @@ app.post("/", async (req, res) => {
     }
 });
 
-
 function extractLastSeconds(audio, name, seconds) {
     return new Promise((resolve, reject) => {
         const inputFilePath = path.resolve(__dirname, `${name}input.webm`);
@@ -79,7 +83,6 @@ function extractLastSeconds(audio, name, seconds) {
     });
 }
 
-
 function concatenateAudios(base64Audio1, base64Audio2, name) {
     return new Promise((resolve, reject) => {
         const inputFile1 = path.resolve(__dirname, `${name}_1.webm`);
@@ -104,8 +107,6 @@ function concatenateAudios(base64Audio1, base64Audio2, name) {
             .mergeToFile(outputFilePath, __dirname);
     });
 }
-
-
 
 function convertToWav(audio, name) {
     return new Promise(async (resolve, reject) => {
@@ -137,7 +138,6 @@ function convertToWav(audio, name) {
     });
 }
 
-
 function convert(inputFilePath, outputFilePath) {
     return new Promise((resolve, reject) => {
         ffmpeg(inputFilePath)
@@ -167,5 +167,190 @@ function getAudioDuration(filePath) {
         });
     });
 }
+
+app.post("/api/merge-and-transcribe", async (req, res) => {
+  const {
+    s3Bucket,
+    audioPrefix,
+    audioFormat,
+    sonioxApiKey,
+    s3Region = "us-east-1",
+  } = req.body;
+ 
+  // ── Validate ────────────────────────────────────────────────────────
+  const missing = [];
+  if (!s3Bucket) missing.push("s3Bucket");
+  if (!audioPrefix) missing.push("audioPrefix");
+  if (!audioFormat) missing.push("audioFormat");
+  if (!sonioxApiKey) missing.push("sonioxApiKey");
+ 
+  if (missing.length > 0) {
+    return res.status(400).json({
+      success: false,
+      error: `Missing required fields: ${missing.join(", ")}`,
+    });
+  }
+ 
+  const ext = audioFormat.startsWith(".") ? audioFormat : `.${audioFormat}`;
+  const s3 = new AWS.S3({ region: s3Region });
+  const mergedKey = `${audioPrefix}_full${ext}`;
+
+  // ── 0. Check if full merged audio already exists in S3 ─────────────
+  try {
+    await s3.headObject({ Bucket: s3Bucket, Key: mergedKey }).promise();
+    console.log(`[s3] full file already exists: ${mergedKey}`);
+    return res.json({ success: true, exists: true, mergedKey });
+  } catch (err) {
+    if (err.code !== "NotFound") {
+      return res.status(500).json({ success: false, error: err.message });
+    }
+  }
+
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "audio-merge-"));
+ 
+  try {
+    // ── 1. List all matching objects in S3 ────────────────────────────
+    console.log(`[s3] listing objects with prefix "${audioPrefix}" ...`);
+ 
+    let allKeys = [];
+    let continuationToken = null;
+ 
+    do {
+      const params = {
+        Bucket: s3Bucket,
+        Prefix: audioPrefix,
+        ...(continuationToken && { ContinuationToken: continuationToken }),
+      };
+ 
+      const listing = await s3.listObjectsV2(params).promise();
+      const keys = (listing.Contents || [])
+        .map((obj) => obj.Key)
+        .filter((key) => key.endsWith(ext));
+ 
+      allKeys.push(...keys);
+      continuationToken = listing.IsTruncated
+        ? listing.NextContinuationToken
+        : null;
+    } while (continuationToken);
+ 
+    if (allKeys.length === 0) {
+      return res.status(404).json({
+        success: false,
+        error: `No files found in s3://${s3Bucket}/ with prefix "${audioPrefix}" and extension "${ext}"`,
+      });
+    }
+ 
+    // ── 2. Sort by numeric index ──────────────────────────────────────
+    allKeys.sort((a, b) => {
+      const idxA =
+        parseInt(a.replace(audioPrefix, "").replace(ext, ""), 10) || 0;
+      const idxB =
+        parseInt(b.replace(audioPrefix, "").replace(ext, ""), 10) || 0;
+      return idxA - idxB;
+    });
+ 
+    console.log(`[s3] found ${allKeys.length} chunks`);
+ 
+    // ── 3. Download all chunks ────────────────────────────────────────
+    console.log("[download] downloading chunks ...");
+ 
+    const CONCURRENCY = 5;
+    const localPaths = new Array(allKeys.length);
+
+    for (let i = 0; i < allKeys.length; i += CONCURRENCY) {
+      const batch = allKeys.slice(i, i + CONCURRENCY);
+      await Promise.all(
+        batch.map((key, batchIdx) => {
+          return new Promise((resolve, reject) => {
+            const localFile = path.join(tmpDir, path.basename(key));
+            const writeStream = fs.createWriteStream(localFile);
+            const readStream = s3
+              .getObject({ Bucket: s3Bucket, Key: key })
+              .createReadStream();
+            readStream.pipe(writeStream);
+            writeStream.on("finish", () => {
+              localPaths[i + batchIdx] = localFile;
+              resolve();
+            });
+            readStream.on("error", reject);
+            writeStream.on("error", reject);
+          });
+        })
+      );
+      if ((i + CONCURRENCY) % 100 === 0 || i + CONCURRENCY >= allKeys.length) {
+        console.log(`[download] ${Math.min(i + CONCURRENCY, allKeys.length)}/${allKeys.length} chunks downloaded`);
+      }
+    }
+
+    console.log(`[download] ${localPaths.length} chunks saved`);
+ 
+    // ── 4. Merge with ffmpeg ──────────────────────────────────────────
+    const concatListPath = path.join(tmpDir, "concat.txt");
+    const concatContent = localPaths
+      .map((p) => `file '${p.replace(/'/g, "'\\''")}'`)
+      .join("\n");
+    fs.writeFileSync(concatListPath, concatContent);
+ 
+    const mergedPath = path.join(tmpDir, `merged${ext}`);
+ 
+    console.log("[ffmpeg] merging chunks ...");
+    await new Promise((resolve, reject) => {
+      ffmpeg()
+        .input(concatListPath)
+        .inputOptions(["-f", "concat", "-safe", "0"])
+        .outputOptions("-c", "copy")
+        .output(mergedPath)
+        .on("start", (cmd) => console.log(`[ffmpeg] ${cmd}`))
+        .on("error", (err) =>
+          reject(new Error(`ffmpeg error: ${err.message}`))
+        )
+        .on("end", () => {
+          console.log("[ffmpeg] merge complete");
+          resolve();
+        })
+        .run();
+    });
+ 
+    // ── 5. Upload merged file back to S3 ────────────────────────────────
+    console.log(`[s3] uploading full file to s3://${s3Bucket}/${mergedKey} ...`);
+    await s3
+      .upload({
+        Bucket: s3Bucket,
+        Key: mergedKey,
+        Body: fs.createReadStream(mergedPath),
+      })
+      .promise();
+    console.log("[s3] full file uploaded");
+
+    // ── 6. Upload to Soniox ───────────────────────────────────────────
+    console.log("[soniox] uploading full file ...");
+ 
+    const form = new FormData();
+    form.append("file", fs.createReadStream(mergedPath), {
+      filename: mergedKey,
+    });
+ 
+    const response = await axios.post(`${SONIOX_BASE_URL}/files`, form, {
+      headers: {
+        ...form.getHeaders(),
+        Authorization: `Bearer ${sonioxApiKey}`,
+      },
+      maxContentLength: Infinity,
+      maxBodyLength: Infinity,
+    });
+ 
+    const fileId = response.data.id;
+    console.log(`[soniox] upload complete — file ID: ${fileId}`);
+ 
+    return res.json({ success: true, sonioxFileId: fileId });
+  } catch (err) {
+    console.error("[api] error:", err.message);
+    return res.status(500).json({ success: false, error: err.message });
+  } finally {
+    // ── 6. Cleanup ────────────────────────────────────────────────────
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+    console.log("[cleanup] temp directory removed");
+  }
+});
 
 app.listen(3004, () => console.log("App is Running on Port 3004"));
