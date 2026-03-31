@@ -195,7 +195,7 @@ function getAudioDuration(filePath) {
 const CALLBACK_URL = "https://3b7mumxa02.execute-api.us-east-2.amazonaws.com/visit/audio/combined";
 
 // ── Background merge + transcribe function ───────────────────────────
-async function processMergeAndTranscribe({ s3Bucket, audioPrefix, audioFormat, sonioxApiKey, s3Region, userToken, visit_id, mergedKey }) {
+async function processMergeAndTranscribe({ s3Bucket, audioPrefix, audioFormat, sonioxApiKey, s3Region, userToken, visit_id, mergedKey, summary_template }) {
   const ext = audioFormat.startsWith(".") ? audioFormat : `.${audioFormat}`;
   const s3 = new AWS.S3({ region: s3Region });
 
@@ -343,6 +343,7 @@ async function processMergeAndTranscribe({ s3Bucket, audioPrefix, audioFormat, s
         visit_id,
         is_call_soniox: true,
         soniox_id: fileId,
+        summary_template: summary_template || null
       }, {
         headers: {
           Authorization: userToken,
@@ -371,7 +372,8 @@ app.post("/api/merge-and-transcribe", async (req, res) => {
     sonioxApiKey,
     s3Region = "us-east-1",
     userToken,
-    visit_id
+    visit_id,
+    summary_template
   } = req.body;
 
   // ── Validate ────────────────────────────────────────────────────────
@@ -407,7 +409,7 @@ app.post("/api/merge-and-transcribe", async (req, res) => {
 
   // ── Kick off background processing and return immediately ───────────
   processMergeAndTranscribe({
-    s3Bucket, audioPrefix, audioFormat, sonioxApiKey, s3Region, userToken, visit_id, mergedKey,
+    s3Bucket, audioPrefix, audioFormat, sonioxApiKey, s3Region, userToken, visit_id, mergedKey, summary_template
   });
 
   return res.json({
