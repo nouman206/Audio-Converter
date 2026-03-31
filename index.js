@@ -9,6 +9,30 @@ const FormData = require("form-data");
 const app = express();
 const SONIOX_BASE_URL = "https://api.soniox.com/v1";
 
+// ── Request queue: max 2 merge jobs at a time ────────────────────────
+const MAX_CONCURRENT_JOBS = 2;
+let activeJobs = 0;
+const jobQueue = [];
+
+function enqueue() {
+  return new Promise((resolve) => {
+    if (activeJobs < MAX_CONCURRENT_JOBS) {
+      activeJobs++;
+      resolve();
+    } else {
+      jobQueue.push(resolve);
+    }
+  });
+}
+
+function dequeue() {
+  activeJobs--;
+  if (jobQueue.length > 0) {
+    activeJobs++;
+    jobQueue.shift()();
+  }
+}
+
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({limit: '50mb', extended: false }));
 
@@ -168,78 +192,48 @@ function getAudioDuration(filePath) {
     });
 }
 
-app.post("/api/merge-and-transcribe", async (req, res) => {
-  const {
-    s3Bucket,
-    audioPrefix,
-    audioFormat,
-    sonioxApiKey,
-    s3Region = "us-east-1",
-  } = req.body;
- 
-  // ── Validate ────────────────────────────────────────────────────────
-  const missing = [];
-  if (!s3Bucket) missing.push("s3Bucket");
-  if (!audioPrefix) missing.push("audioPrefix");
-  if (!audioFormat) missing.push("audioFormat");
-  if (!sonioxApiKey) missing.push("sonioxApiKey");
- 
-  if (missing.length > 0) {
-    return res.status(400).json({
-      success: false,
-      error: `Missing required fields: ${missing.join(", ")}`,
-    });
-  }
- 
+const CALLBACK_URL = "https://3b7mumxa02.execute-api.us-east-2.amazonaws.com/visit/audio/combined";
+
+// ── Background merge + transcribe function ───────────────────────────
+async function processMergeAndTranscribe({ s3Bucket, audioPrefix, audioFormat, sonioxApiKey, s3Region, userToken, visit_id, mergedKey }) {
   const ext = audioFormat.startsWith(".") ? audioFormat : `.${audioFormat}`;
   const s3 = new AWS.S3({ region: s3Region });
-  const mergedKey = `${audioPrefix}_full${ext}`;
 
-  // ── 0. Check if full merged audio already exists in S3 ─────────────
-  try {
-    await s3.headObject({ Bucket: s3Bucket, Key: mergedKey }).promise();
-    console.log(`[s3] full file already exists: ${mergedKey}`);
-    return res.json({ success: true, exists: true, mergedKey });
-  } catch (err) {
-    if (err.code !== "NotFound") {
-      return res.status(500).json({ success: false, error: err.message });
-    }
-  }
+  await enqueue();
+  console.log(`[queue] slot acquired for visit_id: ${visit_id}`);
 
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "audio-merge-"));
- 
+
   try {
     // ── 1. List all matching objects in S3 ────────────────────────────
     console.log(`[s3] listing objects with prefix "${audioPrefix}" ...`);
- 
+
     let allKeys = [];
     let continuationToken = null;
- 
+
     do {
       const params = {
         Bucket: s3Bucket,
         Prefix: audioPrefix,
         ...(continuationToken && { ContinuationToken: continuationToken }),
       };
- 
+
       const listing = await s3.listObjectsV2(params).promise();
       const keys = (listing.Contents || [])
         .map((obj) => obj.Key)
         .filter((key) => key.endsWith(ext));
- 
+
       allKeys.push(...keys);
       continuationToken = listing.IsTruncated
         ? listing.NextContinuationToken
         : null;
     } while (continuationToken);
- 
+
     if (allKeys.length === 0) {
-      return res.status(404).json({
-        success: false,
-        error: `No files found in s3://${s3Bucket}/ with prefix "${audioPrefix}" and extension "${ext}"`,
-      });
+      console.error(`[process] no chunks found for visit_id: ${visit_id}`);
+      return;
     }
- 
+
     // ── 2. Sort by numeric index ──────────────────────────────────────
     allKeys.sort((a, b) => {
       const idxA =
@@ -248,13 +242,13 @@ app.post("/api/merge-and-transcribe", async (req, res) => {
         parseInt(b.replace(audioPrefix, "").replace(ext, ""), 10) || 0;
       return idxA - idxB;
     });
- 
+
     console.log(`[s3] found ${allKeys.length} chunks`);
- 
+
     // ── 3. Download all chunks ────────────────────────────────────────
     console.log("[download] downloading chunks ...");
- 
-    const CONCURRENCY = 5;
+
+    const CONCURRENCY = 20;
     const localPaths = new Array(allKeys.length);
 
     for (let i = 0; i < allKeys.length; i += CONCURRENCY) {
@@ -283,16 +277,16 @@ app.post("/api/merge-and-transcribe", async (req, res) => {
     }
 
     console.log(`[download] ${localPaths.length} chunks saved`);
- 
+
     // ── 4. Merge with ffmpeg ──────────────────────────────────────────
     const concatListPath = path.join(tmpDir, "concat.txt");
     const concatContent = localPaths
       .map((p) => `file '${p.replace(/'/g, "'\\''")}'`)
       .join("\n");
     fs.writeFileSync(concatListPath, concatContent);
- 
+
     const mergedPath = path.join(tmpDir, `merged${ext}`);
- 
+
     console.log("[ffmpeg] merging chunks ...");
     await new Promise((resolve, reject) => {
       ffmpeg()
@@ -310,7 +304,7 @@ app.post("/api/merge-and-transcribe", async (req, res) => {
         })
         .run();
     });
- 
+
     // ── 5. Upload merged file back to S3 ────────────────────────────────
     console.log(`[s3] uploading full file to s3://${s3Bucket}/${mergedKey} ...`);
     await s3
@@ -324,12 +318,12 @@ app.post("/api/merge-and-transcribe", async (req, res) => {
 
     // ── 6. Upload to Soniox ───────────────────────────────────────────
     console.log("[soniox] uploading full file ...");
- 
+
     const form = new FormData();
     form.append("file", fs.createReadStream(mergedPath), {
       filename: mergedKey,
     });
- 
+
     const response = await axios.post(`${SONIOX_BASE_URL}/files`, form, {
       headers: {
         ...form.getHeaders(),
@@ -338,19 +332,84 @@ app.post("/api/merge-and-transcribe", async (req, res) => {
       maxContentLength: Infinity,
       maxBodyLength: Infinity,
     });
- 
+
     const fileId = response.data.id;
     console.log(`[soniox] upload complete — file ID: ${fileId}`);
- 
-    return res.json({ success: true, sonioxFileId: fileId });
+
+    // ── 7. Notify callback endpoint ─────────────────────────────────────
+    console.log(`[callback] notifying completion for visit_id: ${visit_id}`);
+    await axios.post(CALLBACK_URL, {
+      visit_id,
+      is_call_sonix: true,
+      sonix_id: fileId,
+    }, {
+      headers: {
+        Authorization: userToken,
+      },
+    });
+    console.log("[callback] notification sent");
+
   } catch (err) {
-    console.error("[api] error:", err.message);
-    return res.status(500).json({ success: false, error: err.message });
+    console.error(`[process] error for visit_id ${visit_id}:`, err.message);
   } finally {
-    // ── 6. Cleanup ────────────────────────────────────────────────────
     fs.rmSync(tmpDir, { recursive: true, force: true });
     console.log("[cleanup] temp directory removed");
+    dequeue();
+    console.log(`[queue] slot released (${activeJobs}/${MAX_CONCURRENT_JOBS} active, ${jobQueue.length} queued)`);
   }
+}
+
+app.post("/api/merge-and-transcribe", async (req, res) => {
+  const {
+    s3Bucket,
+    audioFormat,
+    sonioxApiKey,
+    s3Region = "us-east-1",
+    userToken,
+    visit_id
+  } = req.body;
+
+  // ── Validate ────────────────────────────────────────────────────────
+  const missing = [];
+  if (!s3Bucket) missing.push("s3Bucket");
+  if (!audioFormat) missing.push("audioFormat");
+  if (!sonioxApiKey) missing.push("sonioxApiKey");
+  if (!visit_id) missing.push("visit_id");
+  if (!userToken) missing.push("userToken");
+
+  if (missing.length > 0) {
+    return res.status(400).json({
+      success: false,
+      error: `Missing required fields: ${missing.join(", ")}`,
+    });
+  }
+
+  const ext = audioFormat.startsWith(".") ? audioFormat : `.${audioFormat}`;
+  const s3 = new AWS.S3({ region: s3Region });
+  const audioPrefix = `${visit_id}_audio_`;
+  const mergedKey = `${visit_id}_audio_full${ext}`;
+
+  // ── Check if full merged audio already exists in S3 ─────────────────
+  try {
+    await s3.headObject({ Bucket: s3Bucket, Key: mergedKey }).promise();
+    console.log(`[s3] full file already exists: ${mergedKey}`);
+    return res.json({ success: true, exists: true, mergedKey });
+  } catch (err) {
+    if (err.code !== "NotFound") {
+      return res.status(500).json({ success: false, error: err.message });
+    }
+  }
+
+  // ── Kick off background processing and return immediately ───────────
+  processMergeAndTranscribe({
+    s3Bucket, audioPrefix, audioFormat, sonioxApiKey, s3Region, userToken, visit_id, mergedKey,
+  });
+
+  return res.json({
+    success: true,
+    processing: true,
+    message: "Processing started. You will be notified when combining is complete.",
+  });
 });
 
 app.listen(3004, () => console.log("App is Running on Port 3004"));
