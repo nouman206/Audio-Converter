@@ -338,16 +338,21 @@ async function processMergeAndTranscribe({ s3Bucket, audioPrefix, audioFormat, s
 
     // ── 7. Notify callback endpoint ─────────────────────────────────────
     console.log(`[callback] notifying completion for visit_id: ${visit_id}`);
-    await axios.post(CALLBACK_URL, {
-      visit_id,
-      is_call_sonix: true,
-      sonix_id: fileId,
-    }, {
-      headers: {
-        Authorization: userToken,
-      },
-    });
-    console.log("[callback] notification sent");
+    try {
+      await axios.post(CALLBACK_URL, {
+        visit_id,
+        is_call_soniox: true,
+        soniox_id: fileId,
+      }, {
+        headers: {
+          Authorization: userToken,
+        },
+      });
+      console.log("[callback] notification sent");
+    } catch (cbErr) {
+      const respData = cbErr.response ? JSON.stringify(cbErr.response.data) : "no response body";
+      console.error(`[callback] failed (${cbErr.response?.status}): ${respData}`);
+    }
 
   } catch (err) {
     console.error(`[process] error for visit_id ${visit_id}:`, err.message);
