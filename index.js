@@ -287,16 +287,36 @@ async function processMergeAndTranscribe({ s3Bucket, audioPrefix, audioFormat, s
 
     const mergedPath = path.join(tmpDir, `merged${ext}`);
 
-    console.log("[ffmpeg] merging chunks ...");
+    // Step 1: concat chunks → WAV (strips all WebM timestamps)
+    const wavPath = path.join(tmpDir, "intermediate.wav");
+    console.log("[ffmpeg] step 1: concat chunks to WAV ...");
     await new Promise((resolve, reject) => {
       ffmpeg()
         .input(concatListPath)
         .inputOptions(["-f", "concat", "-safe", "0"])
-        .outputOptions("-c:a", "libopus", "-b:a", "128k", "-fflags", "+genpts")
+        .outputOptions("-c:a", "pcm_s16le", "-ar", "48000", "-ac", "1")
+        .output(wavPath)
+        .on("start", (cmd) => console.log(`[ffmpeg] ${cmd}`))
+        .on("error", (err) =>
+          reject(new Error(`ffmpeg concat→wav error: ${err.message}`))
+        )
+        .on("end", () => {
+          console.log("[ffmpeg] WAV intermediate ready");
+          resolve();
+        })
+        .run();
+    });
+
+    // Step 2: WAV → final WebM (clean timestamps guaranteed)
+    console.log("[ffmpeg] step 2: WAV to WebM ...");
+    await new Promise((resolve, reject) => {
+      ffmpeg()
+        .input(wavPath)
+        .outputOptions("-c:a", "libopus", "-b:a", "128k")
         .output(mergedPath)
         .on("start", (cmd) => console.log(`[ffmpeg] ${cmd}`))
         .on("error", (err) =>
-          reject(new Error(`ffmpeg error: ${err.message}`))
+          reject(new Error(`ffmpeg wav→webm error: ${err.message}`))
         )
         .on("end", () => {
           console.log("[ffmpeg] merge complete");
@@ -304,6 +324,7 @@ async function processMergeAndTranscribe({ s3Bucket, audioPrefix, audioFormat, s
         })
         .run();
     });
+    fs.unlinkSync(wavPath);
 
     // ── 5. Upload merged file back to S3 ────────────────────────────────
     console.log(`[s3] uploading full file to s3://${s3Bucket}/${mergedKey} ...`);
