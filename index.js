@@ -292,7 +292,7 @@ async function processMergeAndTranscribe({ s3Bucket, audioPrefix, audioFormat, s
       ffmpeg()
         .input(concatListPath)
         .inputOptions(["-f", "concat", "-safe", "0"])
-        .outputOptions("-c", "copy")
+        .outputOptions("-c:a", "libopus", "-b:a", "128k", "-fflags", "+genpts")
         .output(mergedPath)
         .on("start", (cmd) => console.log(`[ffmpeg] ${cmd}`))
         .on("error", (err) =>
