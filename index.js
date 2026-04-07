@@ -1,3 +1,4 @@
+require("dotenv").config();
 const express = require("express");
 const AWS = require("aws-sdk");
 const ffmpeg = require("fluent-ffmpeg");

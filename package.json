@@ -11,6 +11,7 @@
   "dependencies": {
     "aws-sdk": "^2.1693.0",
     "axios": "^1.14.0",
+    "dotenv": "^17.4.1",
     "express": "^4.19.2",
     "ffmpeg-static": "^5.2.0",
     "fluent-ffmpeg": "^2.1.3",
