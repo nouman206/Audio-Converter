@@ -192,8 +192,6 @@ function getAudioDuration(filePath) {
     });
 }
 
-const CALLBACK_URL = "https://3b7mumxa02.execute-api.us-east-2.amazonaws.com/visit/audio/combined";
-
 // ── Background merge + transcribe function ───────────────────────────
 async function processMergeAndTranscribe({ s3Bucket, audioPrefix, audioFormat, sonioxApiKey, s3Region, userToken, visit_id, mergedKey, summary_template }) {
   const ext = audioFormat.startsWith(".") ? audioFormat : `.${audioFormat}`;
@@ -360,7 +358,7 @@ async function processMergeAndTranscribe({ s3Bucket, audioPrefix, audioFormat, s
     // ── 7. Notify callback endpoint ─────────────────────────────────────
     console.log(`[callback] notifying completion for visit_id: ${visit_id}`);
     try {
-      await axios.post(CALLBACK_URL, {
+      await axios.post(process.env.CALLBACK_URL, {
         visit_id,
         is_call_soniox: true,
         soniox_id: fileId,
